@@ -2,8 +2,8 @@ name = "llmcache"
 compatibility_date = "2023-12-01"
 
 [[vectorize]]
-binding = "VECTORIZE"
-index_name = "llmcache-index"
+binding = "VECTORIZE_INDEX"
+index_name = "llmcache-workersai2"
 
 # [vars]
 # MY_VAR = "my-variable"
@@ -22,5 +22,5 @@ preview_id = "fbb60e26369e4ec680bd75dcbab3622c"
 # database_name = "my-database"
 # database_id = ""
 
-# [ai]
-# binding = "AI"
+[ai]
+binding = "AI"

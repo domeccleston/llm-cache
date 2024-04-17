@@ -1,0 +1,26 @@
+name = "llmcache"
+compatibility_date = "2023-12-01"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "llmcache-index"
+
+# [vars]
+# MY_VAR = "my-variable"
+
+[[kv_namespaces]]
+binding = "llmcache"
+id = "d34176cf592646b18ac59b3b0dc3677f"
+preview_id = "fbb60e26369e4ec680bd75dcbab3622c"
+
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "my-bucket"
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "my-database"
+# database_id = ""
+
+# [ai]
+# binding = "AI"

@@ -53,25 +53,108 @@ async function logStream(stream: ReadableStream) {
 	}
 }
 
-app.post("/stream/chat/completions", async (c) => {
-	const openai = new OpenAI({
-		apiKey: c.env.OPENAI_API_KEY,
-	});
-	const body =
-		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
-	const forwardRequest = await openai.chat.completions.create(body);
-	const stream = OpenAIStream(forwardRequest);
-	const [stream1, stream2] = stream.tee();
-	c.executionCtx.waitUntil(logStream(stream2));
-	return streamSSE(c, async (stream) => {
-		await stream.writeSSE({
-			data: `{"message":"hello, world!"}`,
-		});
-		await stream.writeSSE({
-			data: "[DONE]",
-		});
-	});
+class ManagedStream {
+	stream: ReadableStream;
+	reader: ReadableStreamDefaultReader<Uint8Array>;
+	isDone: boolean;
+	data: string;
+	isComplete: boolean;
+
+	constructor(stream: ReadableStream) {
+		this.stream = stream;
+		this.reader = this.stream.getReader();
+		this.isDone = false;
+		this.data = "";
+		this.isComplete = false;
+	}
+
+	async readToEnd() {
+		try {
+			while (true) {
+				const { done, value } = await this.reader.read();
+				if (done) {
+					this.isDone = true;
+					break;
+				}
+				this.data += new TextDecoder().decode(value);
+			}
+		} catch (error) {
+			console.error("Stream error:", error);
+			this.isDone = false;
+		} finally {
+			this.reader.releaseLock();
+		}
+		return this.isDone;
+	}
+
+	checkComplete() {
+		if (this.data.includes("[DONE]")) {
+			this.isComplete = true;
+		}
+	}
+
+	getReader() {
+		return this.reader;
+	}
+
+	getData() {
+		return this.data;
+	}
+}
+
+async function handleCacheOrDiscard(stream: ManagedStream, kv: KVNamespace) {
+	// Read the stream to the end and process it
+	await stream.readToEnd();
+
+	// Check if the data is complete and should be cached
+	if (stream.isDone) {
+		const id = nanoid();
+		const data = stream.getData();
+		await kv.put(id, data);
+		console.log("Data cached in KV with ID:", id);
+	} else {
+		console.log("Data discarded, did not end properly.");
+	}
+}
+
+app.get("/kv", async (c) => {
+	const kv = c.env.llmcache;
+	const keys = await kv.get("0sSw6Y4abKJ3atBMcWhHd");
+	return c.json(keys);
 });
+
+// app.post("/stream/chat/completions", async (c) => {
+// 	const openai = new OpenAI({
+// 		apiKey: c.env.OPENAI_API_KEY,
+// 	});
+// 	const body =
+// 		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
+// 	const forwardRequest = await openai.chat.completions.create(body);
+// 	const stream = OpenAIStream(forwardRequest);
+// 	const [stream1, stream2] = stream.tee();
+// 	const managedStream = new ManagedStream(stream2);
+// 	c.executionCtx.waitUntil(handleCacheOrDiscard(managedStream, c.env.llmcache));
+// 	return streamSSE(c, async (sseStream) => {
+// 		const reader = stream1.getReader();
+// 		try {
+// 			while (true) {
+// 				const { done, value } = await reader.read();
+// 				if (done) {
+// 					await sseStream.writeSSE({ data: "[DONE]" });
+// 					break;
+// 				}
+// 				const data = new TextDecoder().decode(value);
+// 				await sseStream.writeSSE({
+// 					data: `{"message":${JSON.stringify(data)}}`,
+// 				});
+// 			}
+// 		} catch (error) {
+// 			console.error("Stream error:", error);
+// 		} finally {
+// 			reader.releaseLock();
+// 		}
+// 	});
+// });
 
 app.post("/chat/completions", async (c) => {
 	const startTime = Date.now();

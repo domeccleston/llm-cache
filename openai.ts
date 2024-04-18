@@ -3,11 +3,10 @@ import "dotenv/config";
 
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
-	baseURL: "http://localhost:55897/stream",
+	baseURL: "http://localhost:8787",
 });
 
 async function main() {
-	const query = process.argv[2];
 	const chatCompletion = await openai.chat.completions.create({
 		messages: [
 			{
@@ -16,12 +15,12 @@ async function main() {
 			},
 		],
 		model: "gpt-4",
-		stream: true,
 	});
 
-	for await (const chunk of chatCompletion) {
-		console.log(chunk);
-	}
+	// for await (const chunk of chatCompletion) {
+	// 	console.log(chunk);
+	// }
+	console.log(chatCompletion.choices[0].message.content);
 }
 
 main();

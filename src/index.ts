@@ -1,27 +1,23 @@
-import { Hono } from "hono";
+import { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import OpenAI from "openai";
-import { nanoid } from "nanoid";
 import { VectorizeIndex } from "@cloudflare/workers-types";
+import { type Ai } from "@cloudflare/ai";
+import OpenAI from "openai";
 import { OpenAIStream } from "ai";
-import { Stream } from "openai/streaming.mjs";
+import { nanoid } from "nanoid";
+
+const MATCH_THRESHOLD = 0.7;
 
 type Message = {
 	role: "user" | "assistant" | "system";
 	content: string;
 };
 
-export interface Env {
-	VECTORIZE_INDEX: VectorizeIndex;
-	llmcache: KVNamespace;
-	openai_api_key: string;
-}
-
 type Bindings = {
 	VECTORIZE_INDEX: VectorizeIndex;
 	llmcache: KVNamespace;
 	OPENAI_API_KEY: string;
-	AI: unknown;
+	AI: Ai;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -36,6 +32,20 @@ function OpenAIResponse(content: string) {
 			},
 		],
 	};
+}
+
+function parseMessagesToString(messages: Message[]) {
+	return messages
+		.map((message) => `${message.role}: ${message.content}`)
+		.join("\n");
+}
+
+async function getEmbeddings(c: Context, messages: string) {
+	const embeddingsRequest = await c.env.AI.run("@cf/baai/bge-small-en-v1.5", {
+		text: messages,
+	});
+
+	return embeddingsRequest.data[0];
 }
 
 async function logStream(stream: ReadableStream) {
@@ -123,38 +133,38 @@ app.get("/kv", async (c) => {
 	return c.json(keys);
 });
 
-// app.post("/stream/chat/completions", async (c) => {
-// 	const openai = new OpenAI({
-// 		apiKey: c.env.OPENAI_API_KEY,
-// 	});
-// 	const body =
-// 		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
-// 	const forwardRequest = await openai.chat.completions.create(body);
-// 	const stream = OpenAIStream(forwardRequest);
-// 	const [stream1, stream2] = stream.tee();
-// 	const managedStream = new ManagedStream(stream2);
-// 	c.executionCtx.waitUntil(handleCacheOrDiscard(managedStream, c.env.llmcache));
-// 	return streamSSE(c, async (sseStream) => {
-// 		const reader = stream1.getReader();
-// 		try {
-// 			while (true) {
-// 				const { done, value } = await reader.read();
-// 				if (done) {
-// 					await sseStream.writeSSE({ data: "[DONE]" });
-// 					break;
-// 				}
-// 				const data = new TextDecoder().decode(value);
-// 				await sseStream.writeSSE({
-// 					data: `{"message":${JSON.stringify(data)}}`,
-// 				});
-// 			}
-// 		} catch (error) {
-// 			console.error("Stream error:", error);
-// 		} finally {
-// 			reader.releaseLock();
-// 		}
-// 	});
-// });
+app.post("/stream/chat/completions", async (c) => {
+	const openai = new OpenAI({
+		apiKey: c.env.OPENAI_API_KEY,
+	});
+	const body =
+		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
+	const forwardRequest = await openai.chat.completions.create(body);
+	const stream = OpenAIStream(forwardRequest);
+	const [stream1, stream2] = stream.tee();
+	const managedStream = new ManagedStream(stream2);
+	c.executionCtx.waitUntil(handleCacheOrDiscard(managedStream, c.env.llmcache));
+	return streamSSE(c, async (sseStream) => {
+		const reader = stream1.getReader();
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) {
+					await sseStream.writeSSE({ data: "[DONE]" });
+					break;
+				}
+				const data = new TextDecoder().decode(value);
+				await sseStream.writeSSE({
+					data: `{"message":${JSON.stringify(data)}}`,
+				});
+			}
+		} catch (error) {
+			console.error("Stream error:", error);
+		} finally {
+			reader.releaseLock();
+		}
+	});
+});
 
 app.post("/chat/completions", async (c) => {
 	const startTime = Date.now();
@@ -165,25 +175,17 @@ app.post("/chat/completions", async (c) => {
 
 	const openaiRequest = await c.req.json();
 
-	const messages = openaiRequest.messages
-		.map((message: Message) => `${message.role}: ${message.content}`)
-		.join("\n");
+	const messages = parseMessagesToString(openaiRequest.messages);
 
-	console.log(messages);
-
-	const embeddingsRequest = await c.env.AI.run("@cf/baai/bge-small-en-v1.5", {
-		text: messages,
-	});
+	const vector = await getEmbeddings(c, messages);
 
 	const embeddingsTime = Date.now();
-
-	const vector = embeddingsRequest.data[0];
 
 	const query = await c.env.VECTORIZE_INDEX.query(vector, { topK: 1 });
 
 	const queryTime = Date.now();
 
-	if (query.count === 0 || query.matches[0].score < 0.7) {
+	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
 		const chatCompletion = await openai.chat.completions.create({
 			...openaiRequest,
 			stream: false,

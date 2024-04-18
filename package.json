@@ -4,6 +4,7 @@
     "deploy": "wrangler deploy --minify src/index.ts"
   },
   "dependencies": {
+    "@cloudflare/ai": "^1.1.0",
     "ai": "^3.0.23",
     "dotenv": "^16.4.5",
     "hono": "^4.2.3",

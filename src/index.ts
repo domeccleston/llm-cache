@@ -192,15 +192,19 @@ class ManagedStream {
 	}
 }
 
-async function handleCacheOrDiscard(stream: ManagedStream, kv: KVNamespace) {
-	// Read the stream to the end and process it
+async function handleCacheOrDiscard(
+	c: Context,
+	vector: number[],
+	stream: ManagedStream,
+) {
 	await stream.readToEnd();
 
 	// Check if the data is complete and should be cached
 	if (stream.isDone) {
 		const id = nanoid();
 		const data = stream.getData();
-		await kv.put(id, data);
+		await c.env.llmcache.put(id, data);
+		await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
 		console.log("Data cached in KV with ID:", id);
 	} else {
 		console.log("Data discarded, did not end properly.");
@@ -223,7 +227,7 @@ app.post("/stream/chat/completions", async (c) => {
 	const stream = OpenAIStream(forwardRequest);
 	const [stream1, stream2] = stream.tee();
 	const managedStream = new ManagedStream(stream2);
-	c.executionCtx.waitUntil(handleCacheOrDiscard(managedStream, c.env.llmcache));
+	c.executionCtx.waitUntil(handleCacheOrDiscard(c, vector, managedStream));
 	return streamSSE(c, async (sseStream) => {
 		const reader = stream1.getReader();
 		try {
@@ -251,31 +255,54 @@ async function handleStreamingRequest(
 	request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
 	openai: OpenAI,
 ) {
-	const startTime = Date.now();
+	const messages = parseMessagesToString(request.messages);
+	const vector = await getEmbeddings(c, messages);
+	const query = await c.env.VECTORIZE_INDEX.query(vector, { topK: 1 });
 
-	const chatCompletion = await openai.chat.completions.create(request);
-	const stream = OpenAIStream(chatCompletion);
-	const [stream1, stream2] = stream.tee();
-	const managedStream = new ManagedStream(stream2);
-	c.executionCtx.waitUntil(handleCacheOrDiscard(managedStream, c.env.llmcache));
-	return streamSSE(c, async (sseStream) => {
-		const reader = stream1.getReader();
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					await sseStream.writeSSE({ data: "[DONE]" });
-					break;
+	// Cache miss
+	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
+		const chatCompletion = await openai.chat.completions.create(request);
+		const stream = OpenAIStream(chatCompletion);
+		const [stream1, stream2] = stream.tee();
+		const managedStream = new ManagedStream(stream2);
+		c.executionCtx.waitUntil(handleCacheOrDiscard(c, vector, managedStream));
+		return streamSSE(c, async (sseStream) => {
+			const reader = stream1.getReader();
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) {
+						await sseStream.writeSSE({ data: "[DONE]" });
+						break;
+					}
+					const data = new TextDecoder().decode(value);
+					await sseStream.writeSSE({
+						data: `{"message":${JSON.stringify(data)}}`,
+					});
 				}
-				const data = new TextDecoder().decode(value);
-				await sseStream.writeSSE({
-					data: `{"message":${JSON.stringify(data)}}`,
-				});
+			} catch (error) {
+				console.error("Stream error:", error);
+			} finally {
+				reader.releaseLock();
 			}
-		} catch (error) {
-			console.error("Stream error:", error);
-		} finally {
-			reader.releaseLock();
+		});
+	}
+
+	// Cache hit
+	const cachedContent = await c.env.llmcache.get(query.matches[0].id);
+
+	// If we have an embedding, we should always have a corresponding value in KV; but in case we don't,
+	// regenerate and store it
+	if (!cachedContent) {
+		// TODO implement
+		// this repeats the logic above, except that we only write to the KV cache, not the vector DB
+	}
+
+	return streamSSE(c, async (sseStream) => {
+		for (const word of cachedContent.split(" ")) {
+			await sseStream.writeSSE({
+				data: `{"message":${JSON.stringify(word)}}`,
+			});
 		}
 	});
 }
@@ -300,8 +327,10 @@ async function handleNonStreamingRequest(
 		const id = nanoid();
 		await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
 		const vectorInsertTime = Date.now();
-		const kv = c.env.llmcache;
-		await kv.put(id, JSON.stringify(chatCompletion.choices[0].message.content));
+		await c.env.llmcache.put(
+			id,
+			JSON.stringify(chatCompletion.choices[0].message.content),
+		);
 		const kvInsertTime = Date.now();
 		console.log(
 			`Embeddings: ${embeddingsTime - startTime}ms, Query: ${

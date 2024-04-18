@@ -15,12 +15,13 @@ async function main() {
 			},
 		],
 		model: "gpt-4",
+		stream: true,
 	});
 
-	// for await (const chunk of chatCompletion) {
-	// 	console.log(chunk);
-	// }
-	console.log(chatCompletion.choices[0].message.content);
+	for await (const chunk of chatCompletion) {
+		console.log(chunk);
+	}
+	// console.log(chatCompletion.choices[0].message.content);
 }
 
 main();

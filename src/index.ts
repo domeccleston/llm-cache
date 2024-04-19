@@ -1,97 +1,14 @@
-import { Context, Hono } from "hono";
-// import { streamSSE } from "hono/streaming";
-import { VectorizeIndex } from "@cloudflare/workers-types";
-import { type Ai } from "@cloudflare/ai";
+import { type Context, Hono } from "hono";
+import { streamSSE } from "hono/streaming";
+import type { VectorizeIndex } from "@cloudflare/workers-types";
+import type { Ai } from "@cloudflare/ai";
 import OpenAI from "openai";
 import { OpenAIStream } from "ai";
 import { nanoid } from "nanoid";
-import { StreamingApi } from "hono/utils/stream";
-import { open } from "fs";
-import { ChatCompletionMessageParam } from "openai/src/resources/index.js";
+import type { ChatCompletionMessageParam } from "openai/src/resources/index.js";
+import { create } from "domain";
 
-export interface SSEMessage {
-	data: string;
-	event?: string;
-	id?: string;
-	retry?: number;
-}
-
-export class SSEStreamingApi extends StreamingApi {
-	constructor(writable: WritableStream, readable: ReadableStream) {
-		super(writable, readable);
-	}
-
-	async writeSSE(message: SSEMessage) {
-		const data = message.data
-			.split("\n")
-			.map((line) => {
-				return `data: ${line}`;
-			})
-			.join("\n");
-
-		const sseData =
-			[
-				message.event && `event: ${message.event}`,
-				data,
-				message.id && `id: ${message.id}`,
-				message.retry && `retry: ${message.retry}`,
-			]
-				.filter(Boolean)
-				.join("\n") + "\n\n";
-
-		await this.write(sseData);
-	}
-}
-
-const run = async (
-	stream: SSEStreamingApi,
-	cb: (stream: SSEStreamingApi) => Promise<void>,
-	onError?: (e: Error, stream: SSEStreamingApi) => Promise<void>,
-) => {
-	try {
-		await cb(stream);
-	} catch (e) {
-		if (e instanceof Error && onError) {
-			await onError(e, stream);
-
-			await stream.writeSSE({
-				event: "error",
-				data: e.message,
-			});
-		} else {
-			console.error(e);
-		}
-	} finally {
-		stream.close();
-	}
-};
-
-export const streamSSE = (
-	c: Context,
-	cb: (stream: SSEStreamingApi) => Promise<void>,
-	onError?: (e: Error, stream: SSEStreamingApi) => Promise<void>,
-) => {
-	const { readable, writable } = new TransformStream();
-	const stream = new SSEStreamingApi(writable, readable);
-
-	c.header("Transfer-Encoding", "chunked");
-	c.header("Content-Type", "text/event-stream");
-	c.header("Cache-Control", "no-cache");
-	c.header("Connection", "keep-alive");
-
-	run(stream, cb, onError);
-
-	return c.newResponse(stream.responseReadable);
-};
-
-// HONO
-
-const MATCH_THRESHOLD = 0.75;
-
-type Message = {
-	role: "user" | "assistant" | "system";
-	content: string;
-};
+const MATCH_THRESHOLD = 0.78;
 
 type Bindings = {
 	VECTORIZE_INDEX: VectorizeIndex;
@@ -101,6 +18,25 @@ type Bindings = {
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
+
+function createCompletionChunk(content: string, stop = false) {
+	return {
+		id: `chatcmpl-${nanoid()}`,
+		object: "chat.completion.chunk",
+		created: new Date().toISOString(),
+		model: "gpt-4",
+		choices: [
+			{
+				delta: {
+					content,
+				},
+				index: 0,
+				logprobs: null,
+				finish_reason: stop ? "stop" : null,
+			},
+		],
+	};
+}
 
 function OpenAIResponse(content: string) {
 	return {
@@ -126,21 +62,6 @@ async function getEmbeddings(c: Context, messages: string) {
 	});
 
 	return embeddingsRequest.data[0];
-}
-
-async function logStream(stream: ReadableStream) {
-	const reader = stream.getReader();
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			console.log("Log Stream Data:", new TextDecoder().decode(value));
-		}
-	} catch (error) {
-		console.error("Error reading stream:", error);
-	} finally {
-		reader.releaseLock();
-	}
 }
 
 class ManagedStream {
@@ -194,8 +115,8 @@ class ManagedStream {
 
 async function handleCacheOrDiscard(
 	c: Context,
-	vector: number[],
 	stream: ManagedStream,
+	vector?: number[],
 ) {
 	await stream.readToEnd();
 
@@ -204,7 +125,9 @@ async function handleCacheOrDiscard(
 		const id = nanoid();
 		const data = stream.getData();
 		await c.env.llmcache.put(id, data);
-		await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
+		if (vector) {
+			await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
+		}
 		console.log("Data cached in KV with ID:", id);
 	} else {
 		console.log("Data discarded, did not end properly.");
@@ -227,7 +150,7 @@ app.post("/stream/chat/completions", async (c) => {
 	const stream = OpenAIStream(forwardRequest);
 	const [stream1, stream2] = stream.tee();
 	const managedStream = new ManagedStream(stream2);
-	c.executionCtx.waitUntil(handleCacheOrDiscard(c, vector, managedStream));
+	c.executionCtx.waitUntil(handleCacheOrDiscard(c, managedStream, vector));
 	return streamSSE(c, async (sseStream) => {
 		const reader = stream1.getReader();
 		try {
@@ -255,23 +178,45 @@ async function handleStreamingRequest(
 	request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
 	openai: OpenAI,
 ) {
+	const startTime = Date.now();
 	const messages = parseMessagesToString(request.messages);
 	const vector = await getEmbeddings(c, messages);
+	const embeddingsTime = Date.now();
 	const query = await c.env.VECTORIZE_INDEX.query(vector, { topK: 1 });
+	const queryTime = Date.now();
+
+	console.log(
+		`Embeddings: ${embeddingsTime - startTime}ms, Query: ${
+			queryTime - embeddingsTime
+		}ms`,
+	);
 
 	// Cache miss
 	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
 		const chatCompletion = await openai.chat.completions.create(request);
+		const responseTime = Date.now();
 		const stream = OpenAIStream(chatCompletion);
 		const [stream1, stream2] = stream.tee();
 		const managedStream = new ManagedStream(stream2);
-		c.executionCtx.waitUntil(handleCacheOrDiscard(c, vector, managedStream));
+		const streamProcessingTime = Date.now();
+		c.executionCtx.waitUntil(handleCacheOrDiscard(c, managedStream, vector));
+
+		console.log(
+			`Response: ${responseTime - queryTime}ms, Stream: ${
+				streamProcessingTime - responseTime
+			}ms`,
+		);
+
 		return streamSSE(c, async (sseStream) => {
 			const reader = stream1.getReader();
 			try {
 				while (true) {
 					const { done, value } = await reader.read();
 					if (done) {
+						const sseStreamEndTime = Date.now();
+						console.log(
+							`SSE sending: ${sseStreamEndTime - streamProcessingTime}ms`,
+						);
 						await sseStream.writeSSE({ data: "[DONE]" });
 						break;
 					}
@@ -290,20 +235,51 @@ async function handleStreamingRequest(
 
 	// Cache hit
 	const cachedContent = await c.env.llmcache.get(query.matches[0].id);
+	const cacheFetchTime = Date.now();
+
+	console.log(`Cache fetch: ${cacheFetchTime - queryTime}ms`);
 
 	// If we have an embedding, we should always have a corresponding value in KV; but in case we don't,
 	// regenerate and store it
 	if (!cachedContent) {
 		// TODO implement
 		// this repeats the logic above, except that we only write to the KV cache, not the vector DB
+		const chatCompletion = await openai.chat.completions.create(request);
+		const stream = OpenAIStream(chatCompletion);
+		const [stream1, stream2] = stream.tee();
+		const managedStream = new ManagedStream(stream2);
+		c.executionCtx.waitUntil(handleCacheOrDiscard(c, managedStream));
+
+		return streamSSE(c, async (sseStream) => {
+			const reader = stream1.getReader();
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) {
+						await sseStream.writeSSE({ data: "[DONE]" });
+						break;
+					}
+					const data = new TextDecoder().decode(value);
+					await sseStream.writeSSE({
+						data: `{"message":${JSON.stringify(createCompletionChunk(data))}}`,
+					});
+				}
+			} catch (error) {
+				console.error("Stream error:", error);
+			} finally {
+				reader.releaseLock();
+			}
+		});
 	}
 
 	return streamSSE(c, async (sseStream) => {
 		for (const word of cachedContent.split(" ")) {
 			await sseStream.writeSSE({
-				data: `{"message":${JSON.stringify(word)}}`,
+				data: JSON.stringify(createCompletionChunk(word)),
 			});
 		}
+		const endTime = Date.now();
+		console.log(`SSE sending: ${endTime - cacheFetchTime}ms`);
 	});
 }
 
@@ -372,7 +348,7 @@ app.post("/chat/completions", async (c) => {
 		apiKey: c.env.OPENAI_API_KEY,
 	});
 	const request = await c.req.json();
-
+	console.log(request);
 	if (request.stream) {
 		return handleStreamingRequest(c, request, openai);
 		// biome-ignore lint/style/noUselessElse: I hate this rule but I use Biome for work and it's a pain to disable it

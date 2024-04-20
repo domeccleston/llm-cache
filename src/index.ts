@@ -6,9 +6,8 @@ import OpenAI from "openai";
 import { OpenAIStream } from "ai";
 import { nanoid } from "nanoid";
 import type { ChatCompletionMessageParam } from "openai/src/resources/index.js";
-import { create } from "domain";
 
-const MATCH_THRESHOLD = 0.78;
+const MATCH_THRESHOLD = 0.9;
 
 type Bindings = {
 	VECTORIZE_INDEX: VectorizeIndex;
@@ -48,6 +47,11 @@ function OpenAIResponse(content: string) {
 			},
 		],
 	};
+}
+
+function extractWord(chunk: string): string {
+	const match = chunk.match(/"([^"]*)"/);
+	return match ? match[1] : '';
 }
 
 function parseMessagesToString(messages: Array<ChatCompletionMessageParam>) {
@@ -123,7 +127,8 @@ async function handleCacheOrDiscard(
 	// Check if the data is complete and should be cached
 	if (stream.isDone) {
 		const id = nanoid();
-		const data = stream.getData();
+		const rawData = stream.getData();
+		const data = Object.values(rawData).join('').split('"').filter((_, index) => index % 2 !== 0).join('\n');
 		await c.env.llmcache.put(id, data);
 		if (vector) {
 			await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
@@ -138,39 +143,6 @@ app.get("/kv", async (c) => {
 	const kv = c.env.llmcache;
 	const keys = await kv.get("0sSw6Y4abKJ3atBMcWhHd");
 	return c.json(keys);
-});
-
-app.post("/stream/chat/completions", async (c) => {
-	const openai = new OpenAI({
-		apiKey: c.env.OPENAI_API_KEY,
-	});
-	const body =
-		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
-	const forwardRequest = await openai.chat.completions.create(body);
-	const stream = OpenAIStream(forwardRequest);
-	const [stream1, stream2] = stream.tee();
-	const managedStream = new ManagedStream(stream2);
-	c.executionCtx.waitUntil(handleCacheOrDiscard(c, managedStream, vector));
-	return streamSSE(c, async (sseStream) => {
-		const reader = stream1.getReader();
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					await sseStream.writeSSE({ data: "[DONE]" });
-					break;
-				}
-				const data = new TextDecoder().decode(value);
-				await sseStream.writeSSE({
-					data: `{"message":${JSON.stringify(data)}}`,
-				});
-			}
-		} catch (error) {
-			console.error("Stream error:", error);
-		} finally {
-			reader.releaseLock();
-		}
-	});
 });
 
 async function handleStreamingRequest(
@@ -221,8 +193,9 @@ async function handleStreamingRequest(
 						break;
 					}
 					const data = new TextDecoder().decode(value);
+					const formatted = extractWord(data);
 					await sseStream.writeSSE({
-						data: `{"message":${JSON.stringify(data)}}`,
+						data: JSON.stringify(createCompletionChunk(formatted))
 					});
 				}
 			} catch (error) {
@@ -242,7 +215,6 @@ async function handleStreamingRequest(
 	// If we have an embedding, we should always have a corresponding value in KV; but in case we don't,
 	// regenerate and store it
 	if (!cachedContent) {
-		// TODO implement
 		// this repeats the logic above, except that we only write to the KV cache, not the vector DB
 		const chatCompletion = await openai.chat.completions.create(request);
 		const stream = OpenAIStream(chatCompletion);
@@ -260,8 +232,9 @@ async function handleStreamingRequest(
 						break;
 					}
 					const data = new TextDecoder().decode(value);
+					const formatted = extractWord(data);
 					await sseStream.writeSSE({
-						data: `{"message":${JSON.stringify(createCompletionChunk(data))}}`,
+						data: JSON.stringify(createCompletionChunk(formatted))
 					});
 				}
 			} catch (error) {
@@ -348,7 +321,6 @@ app.post("/chat/completions", async (c) => {
 		apiKey: c.env.OPENAI_API_KEY,
 	});
 	const request = await c.req.json();
-	console.log(request);
 	if (request.stream) {
 		return handleStreamingRequest(c, request, openai);
 		// biome-ignore lint/style/noUselessElse: I hate this rule but I use Biome for work and it's a pain to disable it

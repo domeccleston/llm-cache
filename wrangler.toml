@@ -24,3 +24,6 @@ preview_id = "fbb60e26369e4ec680bd75dcbab3622c"
 
 [ai]
 binding = "AI"
+
+[placement]
+mode = "smart"

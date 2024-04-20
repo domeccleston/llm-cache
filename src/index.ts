@@ -166,18 +166,13 @@ async function handleStreamingRequest(
 	// Cache miss
 	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
 		const chatCompletion = await openai.chat.completions.create(request);
-		const responseTime = Date.now();
+		const responseStart = Date.now();
+		console.log(
+			`Response start: ${responseStart - queryTime}ms`);
 		const stream = OpenAIStream(chatCompletion);
 		const [stream1, stream2] = stream.tee();
 		const managedStream = new ManagedStream(stream2);
-		const streamProcessingTime = Date.now();
 		c.executionCtx.waitUntil(handleCacheOrDiscard(c, managedStream, vector));
-
-		console.log(
-			`Response: ${responseTime - queryTime}ms, Stream: ${
-				streamProcessingTime - responseTime
-			}ms`,
-		);
 
 		return streamSSE(c, async (sseStream) => {
 			const reader = stream1.getReader();
@@ -185,10 +180,9 @@ async function handleStreamingRequest(
 				while (true) {
 					const { done, value } = await reader.read();
 					if (done) {
-						const sseStreamEndTime = Date.now();
+						const responseEnd = Date.now();
 						console.log(
-							`SSE sending: ${sseStreamEndTime - streamProcessingTime}ms`,
-						);
+							`Response end: ${responseEnd - responseStart}ms`);
 						await sseStream.writeSSE({ data: "[DONE]" });
 						break;
 					}

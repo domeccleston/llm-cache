@@ -19,9 +19,8 @@ async function main() {
 	});
 
 	for await (const chunk of chatCompletion) {
-		console.log(chunk);
+		console.log(chunk.choices[0].delta.content);
 	}
-	// console.log(chatCompletion.choices[0].message.content);
 }
 
 main();

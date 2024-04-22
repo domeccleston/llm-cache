@@ -311,6 +311,55 @@ async function handleNonStreamingRequest(
 	return c.json(OpenAIResponse(cachedContent));
 }
 
+app.post("/stream/chat/completions", async (c) => {
+	c.res.headers.append("Content-Type", "text/event-stream");
+	c.res.headers.append("Cache-Control", "no-cache");
+	c.res.headers.append("Connection", "keep-alive");
+
+	const openai = new OpenAI({
+		apiKey: c.env.OPENAI_API_KEY,
+	});
+	const request =
+		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
+	console.log("calling openai");
+	const chatCompletion = await openai.chat.completions.create(request);
+	console.log("called openai");
+	const responseStart = Date.now();
+	const stream = OpenAIStream(chatCompletion);
+	console.log("created openai stream");
+	const [stream1, stream2] = stream.tee();
+	console.log("teed openai stream");
+	const managedStream = new ManagedStream(stream2);
+	console.log("created managed stream");
+	return streamSSE(c, async (sseStream) => {
+		const reader = stream1.getReader();
+		console.log("got reader");
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) {
+					const responseEnd = Date.now();
+					console.log(`Response end: ${responseEnd - responseStart}ms`);
+					await sseStream.writeSSE({ data: "[DONE]" });
+					break;
+				}
+				const data = new TextDecoder().decode(value);
+				const formatted = extractWord(data);
+				console.log("writing to sse", formatted);
+				await sseStream.writeSSE({
+					// data: JSON.stringify(createCompletionChunk(formatted)),
+					data,
+				});
+				console.log("wrote to sse");
+			}
+		} catch (error) {
+			console.error("Stream error:", error);
+		} finally {
+			reader.releaseLock();
+		}
+	});
+});
+
 app.post("/chat/completions", async (c) => {
 	const openai = new OpenAI({
 		apiKey: c.env.OPENAI_API_KEY,

@@ -3,7 +3,7 @@ import "dotenv/config";
 
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
-	// baseURL: "http://localhost:8787",
+	baseURL: "http://localhost:8787",
 });
 
 async function main() {

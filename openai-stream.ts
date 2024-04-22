@@ -3,7 +3,7 @@ import "dotenv/config";
 
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
-	baseURL: "http://localhost:8787",
+	baseURL: "http://localhost:8787/stream",
 });
 
 async function main() {
@@ -19,7 +19,7 @@ async function main() {
 	});
 
 	for await (const chunk of chatCompletion) {
-		console.log(chunk.choices[0].delta.content);
+		console.log(chunk);
 	}
 }
 

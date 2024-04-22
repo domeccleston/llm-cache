@@ -1,5 +1,5 @@
 import { type Context, Hono } from "hono";
-import { streamSSE } from "hono/streaming";
+import { streamSSE, SSEStreamingApi, stream, streamText } from "hono/streaming";
 import type { VectorizeIndex } from "@cloudflare/workers-types";
 import type { Ai } from "@cloudflare/ai";
 import OpenAI from "openai";
@@ -15,6 +15,10 @@ type Bindings = {
 	OPENAI_API_KEY: string;
 	AI: Ai;
 };
+
+async function sleep(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -151,9 +155,14 @@ app.get("/kv", async (c) => {
 
 async function handleStreamingRequest(
 	c: Context,
-	request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+	request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
+		noCache?: boolean;
+	},
 	openai: OpenAI,
 ) {
+	c.header("Connection", "keep-alive");
+	c.header("Cache-Control", "no-cache, must-revalidate");
+
 	const startTime = Date.now();
 	const messages = parseMessagesToString(request.messages);
 	const vector = await getEmbeddings(c, messages);
@@ -168,8 +177,14 @@ async function handleStreamingRequest(
 	);
 
 	// Cache miss
-	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
-		const chatCompletion = await openai.chat.completions.create(request);
+	if (
+		query.count === 0 ||
+		query.matches[0].score < MATCH_THRESHOLD ||
+		request.noCache
+	) {
+		// strip no-cache from request
+		const { noCache, ...requestOptions } = request;
+		const chatCompletion = await openai.chat.completions.create(requestOptions);
 		const responseStart = Date.now();
 		console.log(`Response start: ${responseStart - queryTime}ms`);
 		const stream = OpenAIStream(chatCompletion);
@@ -311,64 +326,30 @@ async function handleNonStreamingRequest(
 	return c.json(OpenAIResponse(cachedContent));
 }
 
-app.post("/stream/chat/completions", async (c) => {
-	c.res.headers.append("Content-Type", "text/event-stream");
-	c.res.headers.append("Cache-Control", "no-cache");
-	c.res.headers.append("Connection", "keep-alive");
-
-	const openai = new OpenAI({
-		apiKey: c.env.OPENAI_API_KEY,
-	});
-	const request =
-		(await c.req.json()) as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
-	console.log("calling openai");
-	const chatCompletion = await openai.chat.completions.create(request);
-	console.log("called openai");
-	const responseStart = Date.now();
-	const stream = OpenAIStream(chatCompletion);
-	console.log("created openai stream");
-	const [stream1, stream2] = stream.tee();
-	console.log("teed openai stream");
-	const managedStream = new ManagedStream(stream2);
-	console.log("created managed stream");
-	return streamSSE(c, async (sseStream) => {
-		const reader = stream1.getReader();
-		console.log("got reader");
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					const responseEnd = Date.now();
-					console.log(`Response end: ${responseEnd - responseStart}ms`);
-					await sseStream.writeSSE({ data: "[DONE]" });
-					break;
-				}
-				const data = new TextDecoder().decode(value);
-				const formatted = extractWord(data);
-				console.log("writing to sse", formatted);
-				await sseStream.writeSSE({
-					// data: JSON.stringify(createCompletionChunk(formatted)),
-					data,
-				});
-				console.log("wrote to sse");
-			}
-		} catch (error) {
-			console.error("Stream error:", error);
-		} finally {
-			reader.releaseLock();
-		}
-	});
-});
-
 app.post("/chat/completions", async (c) => {
 	const openai = new OpenAI({
 		apiKey: c.env.OPENAI_API_KEY,
 	});
 	const request = await c.req.json();
+	console.log(request);
 	if (request.stream) {
 		return handleStreamingRequest(c, request, openai);
 	}
 	return handleNonStreamingRequest(c, request, openai);
+});
+
+app.post("/honostream", async (c) => {
+	c.header("Content-Type", "text/event-stream");
+	c.header("Cache-Control", "no-cache");
+	c.header("Connection", "keep-alive");
+	return streamSSE(c, async (stream) => {
+		// Write a text with a new line ('\n').
+		await stream.writeSSE({ data: "Hello" });
+		// Wait 1 second.
+		await stream.sleep(1000);
+		// Write a text without a new line.
+		await stream.writeSSE({ data: "World!" });
+	});
 });
 
 export default app;

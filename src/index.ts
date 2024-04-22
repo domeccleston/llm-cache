@@ -51,7 +51,7 @@ function OpenAIResponse(content: string) {
 
 function extractWord(chunk: string): string {
 	const match = chunk.match(/"([^"]*)"/);
-	return match ? match[1] : '';
+	return match ? match[1] : "";
 }
 
 function parseMessagesToString(messages: Array<ChatCompletionMessageParam>) {
@@ -128,7 +128,11 @@ async function handleCacheOrDiscard(
 	if (stream.isDone) {
 		const id = nanoid();
 		const rawData = stream.getData();
-		const data = Object.values(rawData).join('').split('"').filter((_, index) => index % 2 !== 0).join('\n');
+		const data = Object.values(rawData)
+			.join("")
+			.split('"')
+			.filter((_, index) => index % 2 !== 0)
+			.join("\n");
 		await c.env.llmcache.put(id, data);
 		if (vector) {
 			await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
@@ -167,8 +171,7 @@ async function handleStreamingRequest(
 	if (query.count === 0 || query.matches[0].score < MATCH_THRESHOLD) {
 		const chatCompletion = await openai.chat.completions.create(request);
 		const responseStart = Date.now();
-		console.log(
-			`Response start: ${responseStart - queryTime}ms`);
+		console.log(`Response start: ${responseStart - queryTime}ms`);
 		const stream = OpenAIStream(chatCompletion);
 		const [stream1, stream2] = stream.tee();
 		const managedStream = new ManagedStream(stream2);
@@ -181,15 +184,15 @@ async function handleStreamingRequest(
 					const { done, value } = await reader.read();
 					if (done) {
 						const responseEnd = Date.now();
-						console.log(
-							`Response end: ${responseEnd - responseStart}ms`);
+						console.log(`Response end: ${responseEnd - responseStart}ms`);
 						await sseStream.writeSSE({ data: "[DONE]" });
 						break;
 					}
 					const data = new TextDecoder().decode(value);
 					const formatted = extractWord(data);
+					console.log(formatted);
 					await sseStream.writeSSE({
-						data: JSON.stringify(createCompletionChunk(formatted))
+						data: JSON.stringify(createCompletionChunk(formatted)),
 					});
 				}
 			} catch (error) {
@@ -228,7 +231,7 @@ async function handleStreamingRequest(
 					const data = new TextDecoder().decode(value);
 					const formatted = extractWord(data);
 					await sseStream.writeSSE({
-						data: JSON.stringify(createCompletionChunk(formatted))
+						data: JSON.stringify(createCompletionChunk(formatted)),
 					});
 				}
 			} catch (error) {
@@ -270,10 +273,7 @@ async function handleNonStreamingRequest(
 		const id = nanoid();
 		await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
 		const vectorInsertTime = Date.now();
-		await c.env.llmcache.put(
-			id,
-			JSON.stringify(chatCompletion.choices[0].message.content),
-		);
+		await c.env.llmcache.put(id, chatCompletion.choices[0].message.content);
 		const kvInsertTime = Date.now();
 		console.log(
 			`Embeddings: ${embeddingsTime - startTime}ms, Query: ${
@@ -294,10 +294,11 @@ async function handleNonStreamingRequest(
 	// If we have an embedding, we should always have a corresponding value in KV; but in case we don't,
 	// regenerate and store it
 	if (!cachedContent) {
+		console.log("Vector identified, but no cached content found");
 		const chatCompletion = await openai.chat.completions.create(request);
 		await c.env.llmcache.put(
 			query.matches[0].id,
-			JSON.stringify(chatCompletion.choices[0].message.content),
+			chatCompletion.choices[0].message.content,
 		);
 		return c.json(chatCompletion);
 	}
@@ -317,10 +318,8 @@ app.post("/chat/completions", async (c) => {
 	const request = await c.req.json();
 	if (request.stream) {
 		return handleStreamingRequest(c, request, openai);
-		// biome-ignore lint/style/noUselessElse: I hate this rule but I use Biome for work and it's a pain to disable it
-	} else {
-		return handleNonStreamingRequest(c, request, openai);
 	}
+	return handleNonStreamingRequest(c, request, openai);
 });
 
 export default app;

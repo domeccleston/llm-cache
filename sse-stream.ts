@@ -6,7 +6,8 @@ async function main() {
 	try {
 		const response = await fetch(
 			// "https://api.openai.com/v1/chat/completions",
-			"http://localhost:8787/chat/completions",
+			// "http://localhost:8787/chat/completions",
+			"https://llmcache.unkey.workers.dev/chat/completions",
 			{
 				method: "POST",
 				headers: {

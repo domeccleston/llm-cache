@@ -1,53 +1,28 @@
-import http from "node:http";
-import "dotenv/config";
+import OpenAI from "openai";
+import { OpenAIStream, StreamingTextResponse } from "ai";
 
-const postData = JSON.stringify({
-	noCache: true,
-	model: "gpt-4",
-	stream: true,
-	messages: [
-		{
-			role: "user",
-			content: "Write a haiku about the sunset.",
-		},
-	],
+export const dynamic = "force-dynamic";
+
+const openai = new OpenAI({
+	// biome-ignore lint/style/noNonNullAssertion: <explanation>
+	apiKey: process.env.OPENAI_API_KEY!,
+	baseURL: "https://llmcache.unkey.workers.dev",
 });
 
-const options = {
-	hostname: "localhost",
-	port: 8787,
-	path: "/chat/completions",
-	method: "POST",
-	headers: {
-		"Cache-Control": "no-cache",
-		Connection: "keep-alive",
-		"Content-Type": "application/json",
-		"Content-Length": Buffer.byteLength(postData), // Ensure the length is set correctly
-	},
-};
+export async function POST(req: Request) {
+	// Extract the `messages` from the body of the request
+	const { messages } = await req.json();
 
-async function readStream(request: http.ClientRequest): Promise<string> {
-	return new Promise((resolve, reject) => {
-		let data = "";
-		request.on("data", (chunk) => {
-			data += chunk;
-		});
-		request.on("end", () => {
-			resolve(data);
-		});
-		request.on("error", (err) => {
-			reject(err);
-		});
+	// Request the OpenAI API for the response based on the prompt
+	const response = await openai.chat.completions.create({
+		model: "gpt-4",
+		stream: true,
+		messages: messages,
 	});
-}
 
-export async function POST(request: Request) {
-	const req = http.request(options);
-	const responseData = await readStream(req);
+	// Convert the response into a friendly text-stream
+	const stream = OpenAIStream(response);
 
-	return new Response(responseData, {
-		headers: {
-			"Content-Type": "text/plain",
-		},
-	});
+	// Respond with the stream
+	return new StreamingTextResponse(stream);
 }

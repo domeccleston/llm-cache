@@ -37,6 +37,7 @@ export class Stream<Item> implements AsyncIterable<Item> {
 			let done = false;
 			try {
 				for await (const sse of _iterSSEMessages(response, controller)) {
+					console.log("sse", sse);
 					if (done) continue;
 
 					if (sse.data.startsWith("[DONE]")) {
@@ -84,7 +85,6 @@ export class Stream<Item> implements AsyncIterable<Item> {
 				done = true;
 			} catch (e) {
 				// If the user calls `stream.controller.abort()`, we should exit without throwing.
-				console.log(e);
 				if (e instanceof Error && e.name === "AbortError") return;
 				throw e;
 			} finally {
@@ -510,31 +510,22 @@ function partition(str: string, delimiter: string): [string, string, string] {
 export function readableStreamAsyncIterable<T>(
 	stream: any,
 ): AsyncIterableIterator<T> {
-	// if (stream[Symbol.asyncIterator]) return stream;
-
-	console.log("stream", stream);
+	// if (stream[Symbol.asyncIterator]) return stream
 
 	const reader = stream.getReader();
 
-	console.log("reader", reader);
-
 	return {
 		async next() {
-			console.log("next");
 			try {
-				console.log("read");
-				const result = await reader.read(); // reads chunks sequentially with openai, but in one chunk with my stream
-				console.log("result", result);
-				if (result?.done) reader.releaseLock(); 
+				const result = await reader.read(); 
+				if (result?.done) reader.releaseLock();
 				return result;
 			} catch (e) {
-				console.log("error", e);
-				reader.releaseLock(); 
+				reader.releaseLock();
 				throw e;
 			}
 		},
 		async return() {
-			console.log("return");
 			const cancelPromise = reader.cancel();
 			reader.releaseLock();
 			await cancelPromise;

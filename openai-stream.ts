@@ -17,6 +17,7 @@ async function main() {
 		],
 		model: "gpt-4",
 		stream: true,
+		noCache: true,
 	});
 
 	for await (const chunk of chatCompletion) {

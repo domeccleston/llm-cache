@@ -8,7 +8,7 @@ const postData = JSON.stringify({
 	messages: [
 		{
 			role: "user",
-			content: "Write a poem about the sunset.",
+			content: "Write a haiku about the sunset.",
 		},
 	],
 });
@@ -28,10 +28,9 @@ const options = {
 
 async function main() {
 	const req = http.request(options, (res) => {
-		console.log(`HEADERS: ${JSON.stringify(res.headers)}`);
 
 		res.on("data", (chunk) => {
-			// console.log(`${chunk}`);
+			console.log(`${chunk}`);
 		});
 
 		res.on("end", () => {

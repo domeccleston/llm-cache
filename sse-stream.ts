@@ -1,50 +1,50 @@
-import https from "node:https";
+import { Stream } from "./streaming";
 import "dotenv/config";
 
-const postData = JSON.stringify({
-	// noCache: true,
-	model: "gpt-4",
-	stream: true,
-	messages: [
-		{
-			role: "user",
-			content: "Write a poem about the sunset.",
-		},
-	],
-});
-
-const options = {
-	hostname: "api.openai.com", // Specify the hostname without protocol
-	path: "/v1/chat/completions", // Correct path for API endpoint
-	method: "POST",
-	headers: {
-		"Cache-Control": "no-cache",
-		Connection: "keep-alive",
-		"Content-Type": "application/json",
-		"Content-Length": Buffer.byteLength(postData), // Ensure the length is set correctly
-		Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-	},
-};
-
 async function main() {
-	const req = https.request(options, (res) => {
-		console.log(`HEADERS: ${JSON.stringify(res.headers)}`);
+	// const response = await fetch("http://localhost:8787/chat/completions", {
+	try {
+		const response = await fetch(
+			// "https://api.openai.com/v1/chat/completions",
+			"http://localhost:8787/chat/completions",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+				},
+				body: JSON.stringify({
+					noCache: true,
+					model: "gpt-4",
+					stream: true,
+					messages: [
+						{
+							role: "user",
+							content: "Write a short poem about the sunset.",
+						},
+					],
+				}),
+			},
+		);
 
-		res.on("data", (chunk) => {
-			// console.log(`${chunk}`);
-		});
+		if (!response.ok) {
+			console.error(
+				`HTTP Error: ${response.status} - ${await response.text()}`,
+			);
+		}
 
-		res.on("end", () => {
-			console.log("No more data in response.");
-		});
-	});
-
-	req.on("error", (e) => {
-		console.error(`problem with request: ${e}`);
-	});
-
-	req.write(postData);
-	req.end();
+		const controller = new AbortController();
+		const stream = Stream.fromSSEResponse(response, controller);
+		let i = 0;
+		for await (const sse of stream) {
+			i++;
+			if (i === 1) {
+				console.log("iterating");
+			}
+		}
+	} catch (e) {
+		console.error(e);
+	}
 }
 
 main();

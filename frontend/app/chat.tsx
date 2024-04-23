@@ -6,7 +6,7 @@ export default function MyComponent() {
 	const { messages, input, handleInputChange, handleSubmit } = useChat();
 
 	return (
-		<div>
+		<div className="whitespace-pre-wrap">
 			<ul>
 				{messages.map((m, index) => (
 					<li key={index}>

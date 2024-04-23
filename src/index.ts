@@ -204,10 +204,17 @@ async function handleStreamingRequest(
 						break;
 					}
 					const data = new TextDecoder().decode(value);
+					// extract token from SSE
 					const formatted = extractWord(data);
-					console.log(formatted);
+					// format for OpenAI response
+					const completionChunk = createCompletionChunk(formatted);
+					// stringify
+					const jsonString = JSON.stringify(completionChunk);
+					// OpenAI have already formatted the string, so we need to unescape the newlines since Hono will do it again
+					const correctedString = jsonString.replace(/\\\\n/g, "\\n");
+
 					await sseStream.writeSSE({
-						data: JSON.stringify(createCompletionChunk(formatted)),
+						data: correctedString,
 					});
 				}
 			} catch (error) {
@@ -245,6 +252,7 @@ async function handleStreamingRequest(
 					}
 					const data = new TextDecoder().decode(value);
 					const formatted = extractWord(data);
+					console.log(formatted);
 					await sseStream.writeSSE({
 						data: JSON.stringify(createCompletionChunk(formatted)),
 					});

@@ -5,6 +5,8 @@ import { useChat } from "ai/react";
 export default function MyComponent() {
 	const { messages, input, handleInputChange, handleSubmit } = useChat();
 
+	console.log(messages);	
+
 	return (
 		<div className="whitespace-pre-wrap">
 			<ul>

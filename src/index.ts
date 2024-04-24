@@ -265,10 +265,10 @@ async function handleStreamingRequest(
 		});
 	}
 
-	console.log(cachedContent.split(" "))
+	const wordsWithWhitespace = cachedContent.match(/\S+\s*/g);
 
 	return streamSSE(c, async (sseStream) => {
-		for (const word of cachedContent.split(" ")) {
+		for (const word of wordsWithWhitespace) {
 			await sseStream.writeSSE({
 				data: JSON.stringify(createCompletionChunk(word)),
 			});

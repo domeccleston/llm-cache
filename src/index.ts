@@ -132,12 +132,11 @@ async function handleCacheOrDiscard(
 	if (stream.isDone) {
 		const id = nanoid();
 		const rawData = stream.getData();
-		const data = Object.values(rawData)
-			.join("")
-			.split('"')
-			.filter((_, index) => index % 2 !== 0)
-			.join("\n");
-		await c.env.llmcache.put(id, data);
+		let contentStr = ""
+		for (const token of rawData.split("\n")) {
+			contentStr += extractWord(token)
+		}
+		await c.env.llmcache.put(id, contentStr);
 		if (vector) {
 			await c.env.VECTORIZE_INDEX.insert([{ id, values: vector }]);
 		}
@@ -169,6 +168,8 @@ async function handleStreamingRequest(
 	const embeddingsTime = Date.now();
 	const query = await c.env.VECTORIZE_INDEX.query(vector, { topK: 1 });
 	const queryTime = Date.now();
+
+	console.log("Query results:", query);
 
 	console.log(
 		`Embeddings: ${embeddingsTime - startTime}ms, Query: ${
@@ -252,7 +253,6 @@ async function handleStreamingRequest(
 					}
 					const data = new TextDecoder().decode(value);
 					const formatted = extractWord(data);
-					console.log(formatted);
 					await sseStream.writeSSE({
 						data: JSON.stringify(createCompletionChunk(formatted)),
 					});
@@ -264,6 +264,8 @@ async function handleStreamingRequest(
 			}
 		});
 	}
+
+	console.log(cachedContent.split(" "))
 
 	return streamSSE(c, async (sseStream) => {
 		for (const word of cachedContent.split(" ")) {

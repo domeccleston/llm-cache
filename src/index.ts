@@ -269,8 +269,14 @@ async function handleStreamingRequest(
 
 	return streamSSE(c, async (sseStream) => {
 		for (const word of wordsWithWhitespace) {
+			const completionChunk = createCompletionChunk(word);
+			// stringify
+			const jsonString = JSON.stringify(completionChunk);
+			// OpenAI have already formatted the string, so we need to unescape the newlines since Hono will do it again
+			const correctedString = jsonString.replace(/\\\\n/g, "\\n");
+			
 			await sseStream.writeSSE({
-				data: JSON.stringify(createCompletionChunk(word)),
+				data: correctedString,
 			});
 		}
 		const endTime = Date.now();
